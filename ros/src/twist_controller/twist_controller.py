@@ -1,66 +1,66 @@
 from pid import PID
-from lowpass import LowPassFilter
-from yaw_controller import YawContraller
 import rospy
+from yaw_controller import YawController
 
 GAS_DENSITY = 2.858
 ONE_MPH = 0.44704
+MAX_SPEED = 40.
 
+mps2mph = 2.236936
+
+lon_kp = 0.01
+lon_ki = 0.01
+lon_kd = 0.01
+
+lat_kp=0.2
+lat_ki=0.004
+lat_kd=0.2
+
+coeff_brake = 20.0
 
 class Controller(object):
-    def __init__(self, vehicle_mass, fuel_capacity, brake_deadband, decel_limit, 
-    	accel_limit, wheel_radius, wheel_base, steer_ratio, max_lat_accel, max_steer_angle):
-        
-        # DO: Implement
-        self.yaw_controller = YawContraller(wheel_base, steer_ratio, 0.1, max_lat_accel, max_steer_angle)
+    def __init__(self, wheel_base, steer_ratio, min_speed, max_lat_accel, max_steer_angle):
+        # TODO: Implement
+        self.wheel_base = wheel_base
+        self.steer_ratio = steer_ratio
 
-        # Change parameters
-        kp = 0.3
-        ki = 0.1
-        kd = 0.0
-        mn = 0.01 # minimum throttle
-        mx = 0.2 # max throttle
-        self.throttle_controller = PID(kp, ki, kd, mn, mx)
+        # PID.step -> step(self, error, sample_time)
+        self.PID_lon = PID(lon_kp, lon_ki, lon_kd, mn = 0.0, mx = 1.0)
+        self.PID_steer = PID(lat_kp, lat_ki, lat_kd, mn=-max_steer_angle, mx=max_steer_angle)
 
-        tau = .5 #1/(2pi*tau) is the cutoff frequency
-        ts = .02 # sampling time
-        self.vel_lpf = LowPassFilter(tau, ts)
-        self.vehicle_mass = vehicle_mass
-        self.fuel_capacity = fuel_capacity
-        self.brake_deadband = brake_deadband
-        self.decel_limit = decel_limit
-        self.accel_limit = accel_limit
-        self.wheel_radius = wheel_radius
-        self.last_time = rospy.get_time()
+        self.time_old = rospy.get_time()
+        self.time = 0
 
-        
+        self.yaw_controller = YawController(wheel_base, steer_ratio, min_speed, max_lat_accel, max_steer_angle)
 
-    def control(self, current_vel, dbw_enabled, linear_vel, angular_vel):
-        # DO:  Return throttle, brake, steer
-        if not dbw_enabled:
-        	self.throttle_controller.reset()
-        	return 0.,0.,0.
+    def control(self, current_linear_vel, target_linear_vel, target_angular_vel, dbw_enabled, cte):
+        # TODO: Change the arg, kwarg list to suit your needs
+        # Return throttle, brake, steer
+        self.time = rospy.get_time()
+        sample_time = self.time - self.time_old
 
-        current_vel = self.vel_lpf.filt(current_vel)
-        
-        steering = self.yaw_controller.get_steering(linear_vel, angular_vel, current_vel)
-        
-        vel_error = linear_vel - current_vel
-        self.last_vel = current_vel
+        throttle = 0.0
+        brake = 0.0
+        steer = 0.0
 
-        current_time = rospy.get_time()
-        sample_time = current_time - self.last_time
-        self.last_time = current_time
+        #steer = self.yaw_controller.get_steering(target_linear_vel, target_angular_vel, current_linear_vel)
 
-        throttle = self.throttle_controller.step(vel_error, sample_time)
-        brake = 0
+        if dbw_enabled:
+            # vel_err = target_linear_vel - mps2mph * current_linear_vel
+            vel_err = target_linear_vel - current_linear_vel # m/s - m/s
+            throttle = self.PID_lon.step(vel_err, sample_time)
+            steer = self.PID_steer.step(cte, sample_time)
 
-        if linear_vel==0. and current_vel < 0.1:
-        	throttle = 0
-        	brake = 400 # N*m  hold the car in placeif stopped at a traffic light
-        elif throttle < .1 and val_error < 0:
-        	throttle = 0
-        	decel = max(val_error, self.decel_limit)
-        	brake = abs(decel)*self.vehicle_mass*self.wheel_radius # torque N*m, depends on velocity
+            if vel_err < 0:
+                brake = abs(coeff_brake * vel_err)
 
-        return throttle, brake, steering
+            if target_linear_vel < 1:
+                throttle = 0
+                brake = 100
+
+        else:
+            self.PID_steer.reset()
+
+        self.time_old = self.time
+
+        return throttle, brake, steer
